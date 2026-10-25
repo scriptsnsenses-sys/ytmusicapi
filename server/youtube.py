@@ -750,7 +750,7 @@ def _video(video_id):
             details["publishDate"] = _publish_date_fallback(video_id)
         return details
 
-    return _cached(("video", video_id), load, ttl=300)
+    return _cached(("video", video_id), load, ttl=900)
 
 
 def _watch(video_id, related_limit):
@@ -795,7 +795,7 @@ def _streams(video_id, refresh=False):
                 _CACHE[key] = previous
             raise
 
-    return _cached(key, load, ttl=120)
+    return _cached(key, load, ttl=600)
 
 
 def _open_stream(url, range_header, method):
