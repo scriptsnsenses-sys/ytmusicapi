@@ -397,18 +397,16 @@ body.yt-mode { padding-bottom: 40px; }
 }
 
 /* ================= mouse-lock remote ================= */
-.mouse-lock-card {
-  display: flex; align-items: center; gap: 12px; text-align: left;
-  padding: 14px 16px; border: 1px dashed #ff2d55; border-radius: 12px;
-  background: rgba(255, 45, 85, 0.07); color: inherit; font: inherit; cursor: pointer;
+.mlc-chip {
+  display: inline-flex; align-items: center; gap: 7px; margin-left: 10px;
+  padding: 0 13px; height: 42px; border-radius: 999px;
+  border: 1px dashed #ff2d55; background: rgba(255, 45, 85, 0.07);
+  color: inherit; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
 }
-#home .mouse-lock-card { width: 100%; margin: 2px 0 20px; }
-.yt-row .mouse-lock-card { flex: 0 0 340px; scroll-snap-align: start; }
-.mouse-lock-card .mlc-icon { font-size: 24px; line-height: 1; }
-.mouse-lock-card .mlc-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.mouse-lock-card .mlc-text span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
-.mouse-lock-card .mlc-state { margin-left: auto; font-weight: 700; letter-spacing: 0.08em; font-size: 12px; color: var(--muted); }
-.mouse-lock-card .mlc-state::after { content: ""; }
+.mlc-chip:hover { background: rgba(255, 45, 85, 0.14); }
+.mlc-chip .mlc-state { font-weight: 700; letter-spacing: 0.07em; color: var(--muted); }
+.mlc-chip.armed { border-style: solid; background: rgba(255, 45, 85, 0.18); }
+.mlc-chip.armed .mlc-state { color: #ff2d55; }
 .remote-focus { outline: 3px solid #ff2d55; outline-offset: 2px; }
 .remote-hud {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90;

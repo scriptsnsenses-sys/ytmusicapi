@@ -504,8 +504,7 @@ async function doSearch() {
 $("searchBtn").onclick = doSearch;
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 function musicHome() {
-  resultsEl.innerHTML = ""; detailEl.innerHTML = "";
-  renderMouseLockCard();
+  resultsEl.innerHTML = ""; detailEl.innerHTML = ""; homeEl.innerHTML = "";
   renderContinue();
 }
 const goHome = (e) => {
@@ -671,41 +670,31 @@ let remoteClicks = [];
 let remoteFocusEl = null;
 try { remoteArmed = localStorage.getItem(REMOTE_KEY) === "1"; } catch { /* ignore */ }
 
-function mouseLockCardHtml() {
-  return `<button class="mouse-lock-card" type="button">
-    <span class="mlc-icon">🖱️</span>
-    <span class="mlc-text"><b>Mouse lock remote</b>
-      <span>${remoteArmed
-        ? "Armed — triple-click anywhere to lock the mouse, then steer with the arrow keys"
-        : "Click to arm, then triple-click anywhere to lock your mouse and control WebTube with arrows"}</span>
-    </span>
-    <span class="mlc-state">${remoteArmed ? "ON" : "OFF"}</span>
-  </button>`;
-}
-function renderMouseLockCard() {
-  homeEl.innerHTML = mouseLockCardHtml();
-  bindMouseLockCards();
-}
-function bindMouseLockCards() {
-  document.querySelectorAll(".mouse-lock-card").forEach((card) => {
-    card.onclick = (e) => { e.stopPropagation(); toggleRemoteArmed(); };
-  });
+function updateMouseLockChip() {
+  const chip = $("mouseLockBtn");
+  if (!chip) return;
+  chip.classList.toggle("armed", remoteArmed);
+  chip.title = remoteArmed
+    ? "Mouse lock armed — triple-click anywhere to lock the mouse, then steer with the arrow keys"
+    : "Mouse lock remote — click to arm, then triple-click anywhere to lock your mouse and steer with the arrow keys";
+  const state = $("mouseLockState");
+  if (state) state.textContent = remoteArmed ? "ON" : "OFF";
 }
 function toggleRemoteArmed() {
   remoteArmed = !remoteArmed;
   try { localStorage.setItem(REMOTE_KEY, remoteArmed ? "1" : "0"); } catch { /* ignore */ }
-  renderMouseLockCard();
-  document.querySelectorAll(".mouse-lock-card").forEach((card) => {
-    const text = card.querySelector(".mlc-text span");
-    const state = card.querySelector(".mlc-state");
-    if (text) text.textContent = remoteArmed
-      ? "Armed — triple-click anywhere to lock the mouse, then steer with the arrow keys"
-      : "Click to arm, then triple-click anywhere to lock your mouse and control WebTube with arrows";
-    if (state) state.textContent = remoteArmed ? "ON" : "OFF";
-  });
+  updateMouseLockChip();
   toast(remoteArmed
     ? "Mouse lock armed: triple-click anywhere to lock the mouse"
     : "Mouse lock disabled");
+}
+/* the header chip beside the search bar is always visible in both modes */
+{
+  const chip = $("mouseLockBtn");
+  if (chip) {
+    chip.onclick = (e) => { e.stopPropagation(); toggleRemoteArmed(); };
+    updateMouseLockChip();
+  }
 }
 /* triple-click anywhere (each click within 1.5s) locks the pointer */
 document.addEventListener("click", () => {
@@ -903,16 +892,11 @@ async function loadYtHome() {
   try {
     const data = await api("/yt/home");
     const sections = data.sections || [];
-    const remoteSection = `
-      <section class="yt-section yt-remote-section">
-        <div class="yt-row">${mouseLockCardHtml()}</div>
-      </section>`;
-    ytHomeEl.innerHTML = remoteSection + (sections.length ? sections.map((section) => `
+    ytHomeEl.innerHTML = sections.length ? sections.map((section) => `
       <section class="yt-section">
         <h2 class="yt-section-title">${esc(section.title)}</h2>
         <div class="yt-row">${(section.videos || []).map(ytCard).join("")}</div>
-      </section>`).join("") : `<div class="yt-empty">No videos returned. Try searching above.</div>`);
-    bindMouseLockCards();
+      </section>`).join("") : `<div class="yt-empty">No videos returned. Try searching above.</div>`;
     bindYtCards(ytHomeEl);
     ytHomeLoaded = true;
     setStatus("");
@@ -1201,7 +1185,6 @@ function applyRoute() {
   try { localStorage.setItem(MODE_KEY, "music"); } catch { /* ignore */ }
   if (!musicViewReady) {
     musicViewReady = true;
-    renderMouseLockCard();
     renderContinue();
   }
 }
