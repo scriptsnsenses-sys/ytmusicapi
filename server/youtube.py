@@ -130,11 +130,33 @@ _INNERTUBE_CLIENTS = {
         _UA_CHROME,
         _INNERTUBE_HOST,
     ),
+    # YouTube Studio creator app: historically exempt from the bot check
+    # and from PO-token requirements on adaptive formats.
+    "android_creator": (
+        "ANDROID_CREATOR",
+        "24.45.100",
+        {"androidSdkVersion": 30, "hl": "en", "gl": "US"},
+        "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "com.google.android.apps.youtube.creator/24.45.100 (Linux; U; Android 11) gzip",
+        _INNERTUBE_GOOGLEAPIS_HOST,
+    ),
+    # The WEB_REMIX client ytmusicapi itself uses: keyless, on the music
+    # host, and demonstrably reachable from Render's datacenter IP.
+    "web_music": (
+        "WEB_REMIX",
+        "1." + time.strftime("%Y%m%d", time.gmtime()) + ".01.00",
+        {"hl": "en", "gl": "US"},
+        "",
+        _UA_CHROME,
+        _INNERTUBE_MUSIC_HOST,
+    ),
 }
 _CLIENT_ORDER = [
     "android",
     "android_gapi",
+    "android_creator",
     "android_music",
+    "web_music",
     "android_vr",
     "web_embedded",
     "ios",
@@ -159,16 +181,18 @@ def _clients():
 
 def _innertube(client_key, endpoint, payload, timeout=30):
     name, version, extra, api_key, user_agent, host = _INNERTUBE_CLIENTS[client_key]
-    url = f"{host}/{endpoint}?key={api_key}&prettyPrint=false"
+    query = f"key={api_key}&" if api_key else ""
+    url = f"{host}/{endpoint}?{query}alt=json&prettyPrint=false"
     context = {"client": {"clientName": name, "clientVersion": version, **extra}}
     if client_key in ("web", "web_embedded"):
         context["thirdParty"] = {"embedUrl": "https://www.youtube.com/"}
+    origin = "https://music.youtube.com" if "music.youtube.com" in host else "https://www.youtube.com"
     headers = {
         "User-Agent": user_agent,
         "Content-Type": "application/json",
         "Accept": "*/*",
-        "Origin": "https://www.youtube.com",
-        "Referer": "https://www.youtube.com/",
+        "Origin": origin,
+        "Referer": origin + "/",
         "X-Youtube-Client-Name": name,
         "X-Youtube-Client-Version": version,
     }
@@ -272,12 +296,13 @@ def _parse_decipher_program(player_js):
 
 
 def _decipher_signature(signature, player_js):
+    """Return the deciphered signature, or None when the JS yields no program."""
     program = _DECIPHER_CACHE.get(player_js)
     if program is None:
         program = _parse_decipher_program(player_js)
         _DECIPHER_CACHE[player_js] = program
     if not program:
-        return signature
+        return None
 
     chars = list(signature)
     for statement in re.findall(r"([\w$.]+)\(\s*[\w$]+\s*(?:,\s*([\w$]+|\d+)\s*)?\)", program["body"]):
@@ -313,6 +338,31 @@ def _player_js_url(video_id):
     return f"https://www.youtube.com{match.group(1)}" if match else None
 
 
+_PLAYER_JS_CACHE = {"js": None, "ts": 0.0}
+
+
+def _player_js():
+    """Fetch and cache the current web player JavaScript (for STS + deciphering)."""
+    if _PLAYER_JS_CACHE["js"] and time.monotonic() - _PLAYER_JS_CACHE["ts"] < 3600:
+        return _PLAYER_JS_CACHE["js"]
+    js_url = _player_js_url("aqz-KE-bpKQ")
+    if not js_url:
+        return None
+    response = _SESSION.get(js_url, headers={"User-Agent": _UA_CHROME}, timeout=30)
+    if response.status_code != 200:
+        return None
+    _PLAYER_JS_CACHE.update(js=response.text, ts=time.monotonic())
+    return response.text
+
+
+def _signature_timestamp():
+    js = _player_js()
+    if not js:
+        return ""
+    match = re.search(r"signatureTimestamp[:=]\s*(\d+)", js)
+    return match.group(1) if match else ""
+
+
 def _uncipher_format(stream, player_js):
     """Resolve signatureCipher/ward urls in place; return True on success."""
     ciphered = stream.get("signatureCipher") or stream.get("cipher")
@@ -324,6 +374,10 @@ def _uncipher_format(stream, player_js):
     if not url or not signature or not player_js:
         return False
     deciphered = _decipher_signature(signature, player_js)
+    if deciphered is None:
+        # Current player JS may not expose a decipher program at all; a raw
+        # signature would yield a URL that always 403s, so drop the stream.
+        return False
     if parts.get("sp", "signature"):
         url += f"&{parts.get('sp', 'signature')}={quote(deciphered, safe='')}"
     stream["url"] = url
@@ -457,23 +511,53 @@ def _publish_date_fallback(video_id):
         return ""
 
 
-def _innertube_player(video_id):
+_LAST_GOOD_CLIENT = None
+
+
+def _pickable(response, client):
+    """True when the response yields at least one playable stream combination."""
+    js = _player_js() if client.startswith("web") else None
+    picked = _pick_streams(response, js)
+    return bool(picked["muxed"] or (picked["video"] and picked["audio"]))
+
+
+def _innertube_player(video_id, need_streams=False):
     """Call the player endpoint across clients; return the first OK response."""
+    global _LAST_GOOD_CLIENT
     errors = []
-    for client in _clients():
-        try:
-            payload = _innertube(
-                client,
-                "player",
-                {"videoId": video_id, "contentCheckOk": True, "racyCheckOk": True},
-            )
-            status = payload.get("playabilityStatus", {}).get("status")
-            if status == "OK" and payload.get("streamingData"):
-                return client, payload
-            reason = payload.get("playabilityStatus", {}).get("reason") or status or "no streaming data"
-            errors.append(f"{client}: {reason}")
-        except HTTPException as exc:
-            errors.append(f"{client}: {exc.detail}")
+    clients = _clients()
+    if _LAST_GOOD_CLIENT and _LAST_GOOD_CLIENT in clients:
+        clients = [_LAST_GOOD_CLIENT, *(c for c in clients if c != _LAST_GOOD_CLIENT)]
+    # Two sweeps: datacenter bot checks are often transient, so a short
+    # backoff between sweeps turns many would-be 502s into successes.
+    for attempt in range(2):
+        for client in clients:
+            if attempt and client == clients[0]:
+                time.sleep(1.5)
+            try:
+                payload = {"videoId": video_id, "contentCheckOk": True, "racyCheckOk": True}
+                if client.startswith("web"):
+                    # WEB-family clients refuse to return formats without the
+                    # signature timestamp from the current player JavaScript.
+                    sts = _signature_timestamp()
+                    if sts:
+                        payload["playbackContext"] = {
+                            "contentPlaybackContext": {"signatureTimestamp": int(sts)}
+                        }
+                response = _innertube(client, "player", payload)
+                status = response.get("playabilityStatus", {}).get("status")
+                if status == "OK" and response.get("streamingData"):
+                    if not need_streams or _pickable(response, client):
+                        _LAST_GOOD_CLIENT = client
+                        return client, response
+                    reason = "no decipherable streams"
+                else:
+                    reason = (
+                        response.get("playabilityStatus", {}).get("reason") or status or "no streaming data"
+                    )
+                errors.append(f"{client}: {reason}")
+            except HTTPException as exc:
+                errors.append(f"{client}: {exc.detail}")
     raise HTTPException(
         status_code=502,
         detail="YouTube player rejected the video (" + "; ".join(errors) + ")",
@@ -644,12 +728,10 @@ def _streams(video_id, refresh=False):
         _CACHE.pop(key, None)
 
     def load():
-        client, payload = _innertube_player(video_id)
-        player_js = None
-        if client == "web":
-            js_url = _player_js_url(video_id)
-            if js_url:
-                player_js = _SESSION.get(js_url, headers={"User-Agent": _UA_CHROME}, timeout=30).text
+        client, payload = _innertube_player(video_id, need_streams=True)
+        # WEB-family responses arrive signature-enciphered; the shared cached
+        # player JS deciphers them (STS fetch already warmed it).
+        player_js = _player_js() if client.startswith("web") else None
         streams = _pick_streams(payload, player_js)
         if not (streams["muxed"] or (streams["video"] and streams["audio"])):
             raise HTTPException(status_code=404, detail="No playable streams found for this video")
