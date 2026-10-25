@@ -84,6 +84,8 @@ Optional environment variables for strict networks / datacenter IPs:
 
 The previous ASP.NET Core bridge (`youtube-bridge/`, built from a vendored [YoutubeExplode](https://github.com/scriptsnsenses-sys/YoutubeExplode)) is no longer required at runtime; it is kept in the repo for reference.
 
+**Hosting on a datacenter IP (e.g. Render's free tier):** YouTube sometimes bot-checks the player endpoint from datacenter ranges — search and browsing keep working, but stream resolution can fail with "Sign in to confirm you're not a bot". The fix is to set `YOUTUBE_COOKIE` to the cookie header string of a logged-out youtube.com browser session (copy it from your browser's dev tools on any youtube.com request, then set the env var in your host's dashboard). The resolver tries ten InnerTube clients across three hosts (www, googleapis, music) before giving up, and results are cached, so the cookie is often not needed at all.
+
 Credits:
 ```
 sigma67/ytmusicapi:

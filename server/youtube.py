@@ -605,7 +605,12 @@ def _innertube_player(video_id, need_streams=False):
                 errors.append(f"{client}: {exc.detail}")
     raise HTTPException(
         status_code=502,
-        detail="YouTube player rejected the video (" + "; ".join(errors) + ")",
+        detail=(
+            "YouTube player rejected the video ("
+            + "; ".join(errors)
+            + "). On datacenter hosts, set YOUTUBE_COOKIE to a browser cookie "
+            "header to satisfy the bot check."
+        ),
     )
 
 
@@ -769,18 +774,26 @@ def _watch(video_id, related_limit):
 
 def _streams(video_id, refresh=False):
     key = ("streams", video_id)
+    previous = _CACHE.get(key)
     if refresh:
         _CACHE.pop(key, None)
 
     def load():
-        client, payload = _innertube_player(video_id, need_streams=True)
-        # WEB-family responses arrive signature-enciphered; the shared cached
-        # player JS deciphers them (STS fetch already warmed it).
-        player_js = _player_js() if client.startswith("web") else None
-        streams = _pick_streams(payload, player_js)
-        if not (streams["muxed"] or (streams["video"] and streams["audio"])):
-            raise HTTPException(status_code=404, detail="No playable streams found for this video")
-        return streams
+        try:
+            client, payload = _innertube_player(video_id, need_streams=True)
+            # WEB-family responses arrive signature-enciphered; the shared cached
+            # player JS deciphers them (STS fetch already warmed it).
+            player_js = _player_js() if client.startswith("web") else None
+            streams = _pick_streams(payload, player_js)
+            if not (streams["muxed"] or (streams["video"] and streams["audio"])):
+                raise HTTPException(status_code=404, detail="No playable streams found for this video")
+            return streams
+        except HTTPException:
+            # A failed refresh (e.g. transient bot check) must not discard the
+            # last known-good URLs still needed by the other stream kinds.
+            if refresh and previous is not None:
+                _CACHE[key] = previous
+            raise
 
     return _cached(key, load, ttl=120)
 
