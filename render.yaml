@@ -5,15 +5,13 @@ services:
     name: ytmusicapi
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && bash build-bridge.sh
+    buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: DOTNET_CLI_TELEMETRY_OPTOUT
-        value: "1"
       - key: YTMUSIC_LANGUAGE
         value: en
       # Optional auth: paste JSON or set a file path.
@@ -24,6 +22,9 @@ services:
         sync: false
       - key: YTMUSIC_LOCATION
         sync: false
-      # Optional: YouTube cookies for the YoutubeExplode bridge (bot-check mitigation).
+      # Optional: YouTube cookies for InnerTube requests (bot-check mitigation).
       - key: YOUTUBE_COOKIE
+        sync: false
+      # Optional: PO token for InnerTube player requests on strict networks.
+      - key: YOUTUBE_PO_TOKEN
         sync: false

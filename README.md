@@ -72,21 +72,17 @@ Hosted WebTube URL: https://ytmusicapi-83b8.onrender.com
 
 **Note: WebTube is hosted on Render and falls asleep after 15 minutes without activity. The first request may take around 30–50 seconds while the app wakes up; later requests are fast. Sorry for the inconvenience.**
 
-### YouTube playback (in-repo YoutubeExplode bridge)
+### YouTube playback (built-in InnerTube resolver)
 
-Video mode resolves streams through an ASP.NET Core bridge in `youtube-bridge/`, built from the [YoutubeExplode](https://github.com/scriptsnsenses-sys/YoutubeExplode) source vendored at `youtube-bridge/YoutubeExplode/` — everything compiles from this repo, with no extra package or separate deployment. Run it locally:
+Video mode resolves streams directly from YouTube's InnerTube API inside the Python server — no .NET runtime, no bridge binary, no extra build step. It tries the ANDROID client first (which returns direct, unciphered stream URLs), then IOS, then WEB (where signature-enciphered URLs are deciphered in-process from the web player's JavaScript).
 
-```bash
-dotnet run --project youtube-bridge/WebTube.YoutubeBridge --urls http://127.0.0.1:5001
-```
+Optional environment variables for strict networks / datacenter IPs:
 
-Then start the API as usual (the default `YOUTUBE_BRIDGE_URL` is `http://127.0.0.1:5001`). On Render, `build-bridge.sh` installs the .NET 10 SDK and publishes `bridge-out/`, and `start.sh` runs the bridge and Uvicorn together. Update the vendored library with:
+* `YOUTUBE_COOKIE` — cookie header string sent with InnerTube requests (bot-check mitigation)
+* `YOUTUBE_PO_TOKEN` — service integrity token for player requests
+* `YOUTUBE_CLIENT` — force a single client (`android`, `ios`, or `web`) for debugging
 
-```bash
-git subtree pull --prefix=youtube-bridge/YoutubeExplode https://github.com/scriptsnsenses-sys/YoutubeExplode.git prime --squash
-```
-
-If YouTube demands verification, set `YOUTUBE_COOKIE` to a cookie header string for the bridge.
+The previous ASP.NET Core bridge (`youtube-bridge/`, built from a vendored [YoutubeExplode](https://github.com/scriptsnsenses-sys/YoutubeExplode)) is no longer required at runtime; it is kept in the repo for reference.
 
 Credits:
 ```
