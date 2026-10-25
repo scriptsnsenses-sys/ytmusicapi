@@ -179,6 +179,35 @@ def _clients():
     return _CLIENT_ORDER
 
 
+_VISITOR_CACHE = {"data": "", "ts": 0.0}
+
+
+def _visitor_data():
+    """Warm a browser-like session against the homepage and reuse its visitor id.
+
+    A bare InnerTube POST from a datacenter IP is frequently bot-checked;
+    presenting the visitor data (and cookies) the homepage issued is what
+    keeps ytmusicapi's music calls working from the same IPs.
+    """
+    if _VISITOR_CACHE["data"] and time.monotonic() - _VISITOR_CACHE["ts"] < 3600:
+        return _VISITOR_CACHE["data"]
+    try:
+        response = _SESSION.get(
+            "https://www.youtube.com/",
+            headers={"User-Agent": _UA_CHROME, "Accept-Language": "en-US,en;q=0.9"},
+            timeout=20,
+        )
+        match = re.search(r'"VISITOR_DATA"\s*:\s*"([^"]+)"', response.text)
+        visitor = match.group(1) if match else ""
+        if not visitor:
+            visitor = _SESSION.cookies.get("VISITOR_INFO1_LIVE", "") or ""
+        if visitor:
+            _VISITOR_CACHE.update(data=visitor, ts=time.monotonic())
+    except requests.RequestException:
+        pass
+    return _VISITOR_CACHE["data"]
+
+
 def _innertube(client_key, endpoint, payload, timeout=30):
     name, version, extra, api_key, user_agent, host = _INNERTUBE_CLIENTS[client_key]
     query = f"key={api_key}&" if api_key else ""
@@ -198,8 +227,13 @@ def _innertube(client_key, endpoint, payload, timeout=30):
     }
     if _COOKIE:
         headers["Cookie"] = _COOKIE
-    if _PO_TOKEN and endpoint == "player":
-        context["serviceIntegrityDimensions"] = {"poToken": _PO_TOKEN}
+    if endpoint == "player":
+        visitor = _visitor_data()
+        if visitor:
+            context["client"]["visitorData"] = visitor
+            headers["X-Goog-Visitor-Id"] = visitor
+        if _PO_TOKEN:
+            context["serviceIntegrityDimensions"] = {"poToken": _PO_TOKEN}
     response = _SESSION.post(url, json={"context": context, **payload}, headers=headers, timeout=timeout)
     if response.status_code != 200:
         raise HTTPException(
