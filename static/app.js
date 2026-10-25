@@ -96,6 +96,11 @@ function loadYTAPI() {
 window.onYouTubeIframeAPIReady = () => {
   ytReady = true;
   if (pendingVid) { createPlayer(pendingVid); pendingVid = null; }
+  if (pendingEmbed) {
+    const pending = pendingEmbed;
+    pendingEmbed = null;
+    createYtEmbedNow(pending.videoId, pending.onFail, pending.onMeta);
+  }
 };
 function createPlayer(videoId) {
   ytPlayer = new window.YT.Player("ytplayer", {
@@ -106,6 +111,62 @@ function createPlayer(videoId) {
 }
 function onPlayerState(e) {
   if (window.YT && e.data === window.YT.PlayerState.ENDED) advance();
+}
+
+/* ============ official YouTube embed (watch page) ============
+   Same concept as PierfrancescoSoffritti/android-youtube-player:
+   playback runs through YouTube's own IFrame player in the visitor's
+   browser, so it never depends on this server's IP. Server-resolved
+   streams are only a fallback for when the embed cannot load. */
+let ytEmbedPlayer = null, ytEmbedTimer = null, pendingEmbed = null;
+
+function teardownYtEmbed() {
+  if (ytEmbedTimer) { clearTimeout(ytEmbedTimer); ytEmbedTimer = null; }
+  if (ytEmbedPlayer) {
+    try { ytEmbedPlayer.destroy(); } catch { /* ignore */ }
+    ytEmbedPlayer = null;
+  }
+  const mount = $("ytEmbed");
+  if (mount && mount.tagName === "IFRAME") mount.remove();
+}
+
+function createYtEmbedNow(videoId, onFail, onMeta) {
+  const host = $("ytPlayer");
+  if (!host) return;
+  teardownYtEmbed();
+  host.innerHTML = `<div id="ytEmbed"></div>`;
+  ytEmbedPlayer = new window.YT.Player("ytEmbed", {
+    videoId,
+    playerVars: { autoplay: 1, rel: 0, modestbranding: 1, playsinline: 1 },
+    events: {
+      onReady: (event) => {
+        if (ytEmbedTimer) { clearTimeout(ytEmbedTimer); ytEmbedTimer = null; }
+        try {
+          const data = event.target.getVideoData();
+          if (data && onMeta) onMeta(data.title || "", data.author || "");
+        } catch { /* ignore */ }
+      },
+      onError: () => {
+        teardownYtEmbed();
+        if (onFail) onFail();
+      },
+    },
+  });
+  // If the embed never comes up (API blocked, network issue), fall back.
+  ytEmbedTimer = setTimeout(() => {
+    if (!ytEmbedPlayer) { if (onFail) onFail(); return; }
+    try { ytEmbedPlayer.getIframe(); } catch { teardownYtEmbed(); if (onFail) onFail(); }
+  }, 8000);
+}
+
+function startYtEmbed(videoId, onFail, onMeta) {
+  if (window.YT && window.YT.Player) { createYtEmbedNow(videoId, onFail, onMeta); return; }
+  pendingEmbed = { videoId, onFail, onMeta };
+  loadYTAPI();
+  if (ytEmbedTimer) clearTimeout(ytEmbedTimer);
+  ytEmbedTimer = setTimeout(() => {
+    if (pendingEmbed) { pendingEmbed = null; if (onFail) onFail(); }
+  }, 8000);
 }
 function loadCurrent() {
   const t = queue[qIndex];
@@ -776,11 +837,16 @@ async function loadYtVideo(videoId) {
     setStatus("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (e) {
-    ytWatchEl.innerHTML = `<div class="yt-empty">Video failed to load: ${esc(e.message)}</div>`;
-    setStatus("Video failed: " + e.message);
+    // Details may be bot-gated on the server, but the official player in
+    // the visitor's browser can still play the video; render a minimal
+    // watch page and backfill title/channel from the player itself.
+    renderYtVideo({ videoId, title: "", channel: "", views: "", description: "" }, []);
+    setStatus("Details unavailable — playing via the YouTube player.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 }
 function stopYtPlayback() {
+  teardownYtEmbed();
   document.querySelectorAll("#ytVideo, #ytAudio").forEach((el) => {
     el.pause();
     el.removeAttribute("src");
@@ -792,6 +858,7 @@ function renderYtVideo(video, related) {
   const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(video.videoId)}`;
   const meta = [viewText(video.views), dateText(video.publishDate)].filter(Boolean).join(" • ");
   const avatar = String(video.channel || "?").trim().charAt(0).toUpperCase() || "?";
+  const title = video.title || "Loading…";
   const player = `<div class="yt-player-host" id="ytPlayer"><div class="yt-player-loading">Loading video…</div></div>`;
   const description = video.description
     ? `<div class="yt-description"><b>Description</b>${esc(video.description)}</div>`
@@ -802,7 +869,7 @@ function renderYtVideo(video, related) {
   ytWatchEl.innerHTML = `<div class="yt-watch">
     <div class="yt-watch-main">
       <div class="yt-watch-player">${player}</div>
-      <h1>${esc(video.title)}</h1>
+      <h1>${esc(title)}</h1>
       <div class="yt-watch-meta">
         <span class="yt-avatar">${esc(avatar)}</span>
         <div class="who"><b>${esc(video.channel || "Unknown channel")}</b><span>${esc(meta)}</span></div>
@@ -842,14 +909,34 @@ function renderYtVideo(video, related) {
   ytWatchEl.querySelectorAll(".yt-rel[data-vid]").forEach((card) => {
     card.onclick = () => openYtVideo(card.dataset.vid);
   });
-  setupYtPlayback(video.videoId, watchUrl);
+  setupYtPlayback(video.videoId, watchUrl, (title, author) => {
+    const h1 = ytWatchEl.querySelector("h1");
+    if (h1 && (!video.title || h1.textContent === "Loading…") && title) {
+      h1.textContent = title;
+      document.title = `${title} - WebTube`;
+    }
+    if (author && (!video.channel || video.channel === "Unknown channel")) {
+      const who = ytWatchEl.querySelector(".who b");
+      if (who) who.textContent = author;
+      const av = ytWatchEl.querySelector(".yt-avatar");
+      if (av) av.textContent = author.trim().charAt(0).toUpperCase() || "?";
+    }
+  });
 }
-async function setupYtPlayback(videoId, watchUrl) {
+function setupYtPlayback(videoId, watchUrl, onMeta) {
   const host = $("ytPlayer");
   if (!host) return;
   const fallback = (message) => {
     host.innerHTML = `<div class="yt-fallback"><p>${esc(message)}</p><a class="yt-action" href="${esc(watchUrl)}" target="_blank" rel="noopener">Open on YouTube ↗</a></div>`;
   };
+  // Primary: official YouTube player (plays in the visitor's browser).
+  startYtEmbed(
+    videoId,
+    () => setupYtStreams(videoId, host, fallback),
+    onMeta,
+  );
+}
+async function setupYtStreams(videoId, host, fallback) {
   try {
     const data = await api(`/yt/streams/${encodeURIComponent(videoId)}`);
     const streams = data.streams || {};
