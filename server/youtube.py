@@ -140,6 +140,16 @@ _INNERTUBE_CLIENTS = {
         "com.google.android.apps.youtube.creator/24.45.100 (Linux; U; Android 11) gzip",
         _INNERTUBE_GOOGLEAPIS_HOST,
     ),
+    # The ANDROID context on the music host behaves like the app's music
+    # player but still returns direct URLs for arbitrary videos.
+    "android_on_music": (
+        "ANDROID",
+        "20.10.38",
+        {"androidSdkVersion": 30, "hl": "en", "gl": "US"},
+        "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+        _INNERTUBE_MUSIC_HOST,
+    ),
     # The WEB_REMIX client ytmusicapi itself uses: keyless, on the music
     # host, and demonstrably reachable from Render's datacenter IP.
     "web_music": (
@@ -154,6 +164,7 @@ _INNERTUBE_CLIENTS = {
 _CLIENT_ORDER = [
     "android",
     "android_gapi",
+    "android_on_music",
     "android_creator",
     "android_music",
     "web_music",
