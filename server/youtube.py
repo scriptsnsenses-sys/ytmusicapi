@@ -9,7 +9,8 @@ Optional environment variables:
     YOUTUBE_COOKIE      cookie header string sent with InnerTube requests
                         (bot-check mitigation on datacenter IPs)
     YOUTUBE_PO_TOKEN    service integrity token appended to player requests
-    YOUTUBE_CLIENT      force a single client (android|ios|web) for debugging
+    YOUTUBE_CLIENT      force a single client (android|android_gapi|android_music|
+                        android_vr|web_embedded|ios|web) for debugging
 """
 
 import os
@@ -51,8 +52,10 @@ _SEARCH_PARAMS_VIDEOS = "EgIQAQ=="  # videos-only search filter
 
 _UA_CHROME = _STREAM_HEADERS["User-Agent"]
 _INNERTUBE_HOST = "https://www.youtube.com/youtubei/v1"
+_INNERTUBE_GOOGLEAPIS_HOST = "https://youtubei.googleapis.com/youtubei/v1"
+_INNERTUBE_MUSIC_HOST = "https://music.youtube.com/youtubei/v1"
 
-# client: (clientName, clientVersion, extra context, apiKey, user agent)
+# client: (clientName, clientVersion, extra context, apiKey, user agent, host)
 _INNERTUBE_CLIENTS = {
     "android": (
         "ANDROID",
@@ -60,6 +63,49 @@ _INNERTUBE_CLIENTS = {
         {"androidSdkVersion": 30, "hl": "en", "gl": "US"},
         "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
         "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+        _INNERTUBE_HOST,
+    ),
+    # The VR client historically serves unciphered streams without a PO token,
+    # even from datacenter IPs.
+    "android_vr": (
+        "ANDROID_VR",
+        "1.61.48",
+        {"androidSdkVersion": 32, "hl": "en", "gl": "US"},
+        "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        (
+            "com.google.android.apps.youtube.vr.oculus/1.61.48"
+            " (Linux; U; Android 12; eureka-user Build/SQ3A.220705.004.A1) gzip"
+        ),
+        _INNERTUBE_HOST,
+    ),
+    # Same ANDROID client, but on the host the native app actually uses.
+    "android_gapi": (
+        "ANDROID",
+        "20.10.38",
+        {"androidSdkVersion": 30, "hl": "en", "gl": "US"},
+        "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+        _INNERTUBE_GOOGLEAPIS_HOST,
+    ),
+    # Embedded web player: only serves embeddable videos, but is gated less
+    # aggressively than the plain WEB client.
+    "web_embedded": (
+        "WEB_EMBEDDED_PLAYER",
+        "1.20250116.01.00",
+        {"hl": "en", "gl": "US"},
+        "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        _UA_CHROME,
+        _INNERTUBE_HOST,
+    ),
+    # Music clients run on music.youtube.com, which gates datacenter IPs
+    # far less aggressively (music search already works from Render).
+    "android_music": (
+        "ANDROID_MUSIC",
+        "8.02.53",
+        {"androidSdkVersion": 34, "hl": "en", "gl": "US"},
+        "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "com.google.android.apps.youtube.music/8.02.53 (Linux; U; Android 13) gzip",
+        _INNERTUBE_MUSIC_HOST,
     ),
     "ios": (
         "IOS",
@@ -74,6 +120,7 @@ _INNERTUBE_CLIENTS = {
         },
         "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
         "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+        _INNERTUBE_HOST,
     ),
     "web": (
         "WEB",
@@ -81,9 +128,20 @@ _INNERTUBE_CLIENTS = {
         {"hl": "en", "gl": "US"},
         "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
         _UA_CHROME,
+        _INNERTUBE_HOST,
     ),
 }
-_CLIENT_ORDER = ["android", "ios", "web"]
+_CLIENT_ORDER = [
+    "android",
+    "android_gapi",
+    "android_music",
+    "android_vr",
+    "web_embedded",
+    "ios",
+    "web",
+]
+# android and android_gapi are verified to return direct unciphered URLs;
+# the rest are best-effort fallbacks for stricter networks.
 
 _SESSION = requests.Session()
 _COOKIE = os.environ.get("YOUTUBE_COOKIE", "").strip()
@@ -100,10 +158,10 @@ def _clients():
 
 
 def _innertube(client_key, endpoint, payload, timeout=30):
-    name, version, extra, api_key, user_agent = _INNERTUBE_CLIENTS[client_key]
-    url = f"{_INNERTUBE_HOST}/{endpoint}?key={api_key}&prettyPrint=false"
+    name, version, extra, api_key, user_agent, host = _INNERTUBE_CLIENTS[client_key]
+    url = f"{host}/{endpoint}?key={api_key}&prettyPrint=false"
     context = {"client": {"clientName": name, "clientVersion": version, **extra}}
-    if client_key == "web":
+    if client_key in ("web", "web_embedded"):
         context["thirdParty"] = {"embedUrl": "https://www.youtube.com/"}
     headers = {
         "User-Agent": user_agent,
