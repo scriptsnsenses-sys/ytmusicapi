@@ -829,20 +829,58 @@ async function loadYtVideo(videoId) {
   ytHomeEl.classList.add("hidden");
   ytResultsEl.classList.add("hidden");
   ytWatchEl.classList.remove("hidden");
-  ytWatchEl.innerHTML = `<div class="yt-empty">Loading video…</div>`;
-  setStatus("Loading video…");
+  // Render the watch page and start the official player immediately —
+  // playback never waits on server-side details, which can be slow or
+  // bot-gated on datacenter hosts.
+  renderYtVideo({ videoId, title: "", channel: "", views: "", description: "" }, []);
+  setStatus("Loading…");
+  window.scrollTo({ top: 0, behavior: "smooth" });
   try {
     const data = await api(`/yt/video/${encodeURIComponent(videoId)}`);
-    renderYtVideo(data.video || {}, data.related || []);
+    applyYtDetails(data.video || {}, data.related || []);
     setStatus("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (e) {
-    // Details may be bot-gated on the server, but the official player in
-    // the visitor's browser can still play the video; render a minimal
-    // watch page and backfill title/channel from the player itself.
-    renderYtVideo({ videoId, title: "", channel: "", views: "", description: "" }, []);
+    // Details unavailable (bot check) — the official player in the
+    // visitor's browser still plays, and it backfills title/channel.
     setStatus("Details unavailable — playing via the YouTube player.");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+function applyYtDetails(video, related) {
+  // Patch the already-rendered watch page in place so the running player
+  // is not torn down and restarted.
+  const h1 = ytWatchEl.querySelector("h1");
+  if (h1 && video.title) { h1.textContent = video.title; document.title = `${video.title} - WebTube`; }
+  const who = ytWatchEl.querySelector(".who b");
+  if (who && video.channel) who.textContent = video.channel;
+  const avatar = ytWatchEl.querySelector(".yt-avatar");
+  if (avatar && video.channel) avatar.textContent = video.channel.trim().charAt(0).toUpperCase() || "?";
+  const meta = ytWatchEl.querySelector(".who span");
+  const metaText = [viewText(video.views), dateText(video.publishDate)].filter(Boolean).join(" • ");
+  if (meta && metaText) meta.textContent = metaText;
+  if (video.description && !ytWatchEl.querySelector(".yt-description")) {
+    const actions = ytWatchEl.querySelector(".yt-actions");
+    if (actions) {
+      actions.insertAdjacentHTML("afterend", `<div class="yt-description"><b>Description</b>${esc(video.description)}</div>`);
+    }
+  }
+  const list = ytWatchEl.querySelector(".yt-related-list");
+  if (list && related.length) {
+    list.innerHTML = related.map(ytRelCard).join("");
+    list.querySelectorAll(".yt-rel[data-vid]").forEach((card) => {
+      card.onclick = () => openYtVideo(card.dataset.vid);
+    });
+  }
+  const audioBtn = $("ytPlayAudio");
+  if (audioBtn && video.videoId) {
+    audioBtn.onclick = () => {
+      const items = [
+        { videoId: video.videoId, title: video.title, sub: video.channel },
+        ...related.map((item) => ({ videoId: item.videoId, title: item.title, sub: item.channel })),
+      ];
+      pushRoute("music");
+      setMode("music");
+      play(video.videoId, video.title, video.channel, items, 0);
+    };
   }
 }
 function stopYtPlayback() {
