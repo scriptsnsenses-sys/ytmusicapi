@@ -504,8 +504,8 @@ async function doSearch() {
 $("searchBtn").onclick = doSearch;
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 function musicHome() {
-  resultsEl.innerHTML = ""; detailEl.innerHTML = "";
-  renderContinue(); loadHome();
+  resultsEl.innerHTML = ""; detailEl.innerHTML = ""; homeEl.innerHTML = "";
+  renderContinue();
 }
 const goHome = (e) => {
   if (e) e.preventDefault();
@@ -660,40 +660,6 @@ async function showPlaylist(playlistId) {
     detailEl.scrollIntoView({ behavior: "smooth" });
     setStatus("");
   } catch (e) { setStatus("Playlist failed: " + e.message); }
-}
-
-/* ================= home ================= */
-async function loadHome() {
-  setStatus("Loading home…");
-  try {
-    const rows = await api("/home?limit=3");
-    homeEl.innerHTML = rows.map((row) =>
-      `<h2 class="shelf-title">${esc(row.title)}</h2><div class="shelf-row">` + (row.contents || []).map((it) => {
-        const bid = it.browseId || it.playlistId || "";
-        return `<button class="card" data-browse="${esc(bid)}" data-vid="${esc(it.videoId || "")}" data-title="${esc(it.title || "")}" data-sub="${esc(artistNames(it) || "")}">
-          <span class="art"><img loading="lazy" src="${esc(thumbOf(it))}" alt=""><span class="veil"><span class="playdot">▶</span></span></span>
-          <span class="meta"><b>${esc(it.title)}</b><span>${esc(artistNames(it) || "")}</span></span>
-        </button>`;
-      }).join("") + `</div>`
-    ).join("");
-    homeEl.querySelectorAll(".card").forEach((c) => {
-      c.onclick = () => {
-        if (c.dataset.vid) play(c.dataset.vid, c.dataset.title, c.dataset.sub);
-        else if (c.dataset.browse) {
-          const b = c.dataset.browse;
-          if (b.startsWith("UC")) showArtist(b);
-          else if (b.startsWith("MPRE")) showAlbum(b);
-          else showPlaylist(b.replace(/^VL/, ""));
-        }
-      };
-      c.oncontextmenu = (e) => {
-        if (!c.dataset.vid) return;
-        e.preventDefault();
-        openCtx({ videoId: c.dataset.vid, title: c.dataset.title, artists: [{ name: c.dataset.sub }] }, e.clientX, e.clientY);
-      };
-    });
-    setStatus("");
-  } catch (e) { setStatus("Home failed: " + e.message); }
 }
 
 /* ================= YouTube mode ================= */
@@ -1082,7 +1048,6 @@ function applyRoute() {
   if (!musicViewReady) {
     musicViewReady = true;
     renderContinue();
-    loadHome();
   }
 }
 

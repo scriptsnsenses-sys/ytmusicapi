@@ -32,9 +32,6 @@ API Health
 (GET) /search
 Search for songs
 
-(GET) /home
-Shows top 50 songs. These songs were last updated by the library owner not me so these are outdated. Consider updating them or wait for me to update.
-
 (GET) /artist/{channel_id}
 Artist's channel ID
 
@@ -51,7 +48,7 @@ Watch a music video
 Fetch the lyrics.
 
 (GET) /yt/home
-WebTube video mode home feed (trending, technology, gaming, news, comedy, sports, and trailers)
+WebTube video mode home feed (technology, gaming, news, comedy, sports, and trailers)
 
 (GET) /yt/search
 Search YouTube videos or songs

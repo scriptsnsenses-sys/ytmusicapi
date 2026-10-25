@@ -29,7 +29,6 @@ router = APIRouter()
 _CACHE = {}
 _CACHE_TTL = 600
 _HOME_QUERIES = [
-    ("Trending now", "trending videos"),
     ("Technology", "technology"),
     ("Gaming", "gaming"),
     ("News & politics", "news"),

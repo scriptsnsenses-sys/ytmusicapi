@@ -77,11 +77,6 @@ def search(
     return JSONResponse(_call(yt.search, q, filter=filter, scope=scope, limit=limit, ignore_spelling=ignore_spelling))
 
 
-@router.get("/home")
-def home(limit: int = Query(3, ge=1, le=10)):
-    return JSONResponse(_call(get_client().get_home, limit=limit))
-
-
 @router.get("/artist/{channel_id}")
 def artist(channel_id: str):
     return JSONResponse(_call(get_client().get_artist, channel_id))

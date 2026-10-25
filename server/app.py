@@ -67,7 +67,6 @@ def api_info():
         "health": "/health",
         "endpoints": [
             "/search",
-            "/home",
             "/artist/{channel_id}",
             "/album/{browse_id}",
             "/song/{video_id}",
