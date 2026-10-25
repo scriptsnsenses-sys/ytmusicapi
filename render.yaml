@@ -22,9 +22,3 @@ services:
         sync: false
       - key: YTMUSIC_LOCATION
         sync: false
-      # Optional: YouTube cookies for InnerTube requests (bot-check mitigation).
-      - key: YOUTUBE_COOKIE
-        sync: false
-      # Optional: PO token for InnerTube player requests on strict networks.
-      - key: YOUTUBE_PO_TOKEN
-        sync: false

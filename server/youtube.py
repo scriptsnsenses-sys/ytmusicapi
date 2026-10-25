@@ -1,20 +1,20 @@
 """YouTube video mode backed directly by YouTube's InnerTube API.
 
-No external bridge required: search runs through the WEB client and video
-details/streams through the ANDROID client, which returns direct (unciphered)
-googlevideo URLs. IOS and WEB act as fallbacks; WEB streams arrive
-signature-encrypted, so a compact decipherer is included.
+No external bridge, no cookies, no accounts: search runs through the WEB
+client and video details/streams through the ANDROID client, which returns
+direct (unciphered) googlevideo URLs. Ten clients across three hosts are
+tried in order, and public Piped/Invidious instances act as a final
+fallback for hosts whose IP YouTube bot-checks. A background refresher
+keeps successfully resolved streams warm so blocked windows go unnoticed.
 
 Optional environment variables:
-    YOUTUBE_COOKIE      cookie header string sent with InnerTube requests
-                        (bot-check mitigation on datacenter IPs)
-    YOUTUBE_PO_TOKEN    service integrity token appended to player requests
     YOUTUBE_CLIENT      force a single client (android|android_gapi|android_music|
                         android_vr|web_embedded|ios|web) for debugging
 """
 
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -177,8 +177,6 @@ _CLIENT_ORDER = [
 # the rest are best-effort fallbacks for stricter networks.
 
 _SESSION = requests.Session()
-_COOKIE = os.environ.get("YOUTUBE_COOKIE", "").strip()
-_PO_TOKEN = os.environ.get("YOUTUBE_PO_TOKEN", "").strip()
 _FORCED_CLIENT = os.environ.get("YOUTUBE_CLIENT", "").strip().lower()
 if _FORCED_CLIENT and _FORCED_CLIENT not in _INNERTUBE_CLIENTS:
     _FORCED_CLIENT = ""
@@ -236,15 +234,11 @@ def _innertube(client_key, endpoint, payload, timeout=30):
         "X-Youtube-Client-Name": name,
         "X-Youtube-Client-Version": version,
     }
-    if _COOKIE:
-        headers["Cookie"] = _COOKIE
     if endpoint == "player":
         visitor = _visitor_data()
         if visitor:
             context["client"]["visitorData"] = visitor
             headers["X-Goog-Visitor-Id"] = visitor
-        if _PO_TOKEN:
-            context["serviceIntegrityDimensions"] = {"poToken": _PO_TOKEN}
     response = _SESSION.post(url, json={"context": context, **payload}, headers=headers, timeout=timeout)
     if response.status_code != 200:
         raise HTTPException(
@@ -605,12 +599,7 @@ def _innertube_player(video_id, need_streams=False):
                 errors.append(f"{client}: {exc.detail}")
     raise HTTPException(
         status_code=502,
-        detail=(
-            "YouTube player rejected the video ("
-            + "; ".join(errors)
-            + "). On datacenter hosts, set YOUTUBE_COOKIE to a browser cookie "
-            "header to satisfy the bot check."
-        ),
+        detail="YouTube player rejected the video (" + "; ".join(errors) + ")",
     )
 
 
@@ -704,6 +693,257 @@ def _parse_format_entry(entry, player_js):
 
 
 # --------------------------------------------------------------------------
+# Community-instance fallback (Piped / Invidious) — anonymous, cookie-free
+# --------------------------------------------------------------------------
+
+_PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.private.coffee",
+    "https://pipedapi.ducks.party",
+    "https://pipedapi.reallyaweso.me",
+    "https://pipedapi.leptons.xyz",
+]
+_INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://yewtu.be",
+]
+_FALLBACK_TIMEOUT = 8
+
+
+def _fallback_get(url):
+    response = _SESSION.get(
+        url, headers={"User-Agent": _UA_CHROME, "Accept": "application/json"}, timeout=_FALLBACK_TIMEOUT
+    )
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    return None if isinstance(data, dict) and data.get("error") else data
+
+
+def _finish_streams(muxed, video, audio):
+    if muxed or (video and audio):
+        return {"muxed": muxed, "video": video, "audio": audio}
+    return None
+
+
+def _pick_community(muxed, video, audio):
+    """Same selection policy as the InnerTube picker, for community formats."""
+
+    def mp4(candidates):
+        return [stream for stream in candidates if stream["container"] == "mp4"] or candidates
+
+    def by_height(candidates):
+        pool = mp4(candidates)
+        if not pool:
+            return None
+        # Prefer H.264 when heights tie: widest browser/hardware support.
+        return max(pool, key=lambda s: ((s.get("height") or 0), s["codec"].startswith("avc1")))
+
+    audio_pool = mp4(audio)
+    return _finish_streams(
+        by_height(muxed),
+        by_height([s for s in video if (s.get("height") or 0) <= 1080] or video),
+        max(audio_pool, key=lambda s: s["bitrate"]) if audio_pool else None,
+    )
+
+
+def _piped_streams(video_id):
+    """Best-effort streams from a public Piped instance (URLs are proxied)."""
+    for base in _PIPED_INSTANCES:
+        try:
+            data = _fallback_get(f"{base}/streams/{quote(video_id, safe='')}")
+        except (requests.RequestException, ValueError):
+            continue
+        if not data:
+            continue
+        try:
+            muxed, video, audio = [], [], []
+            for entry in data.get("videoStreams", []):
+                if not entry.get("url"):
+                    continue
+                mime = entry.get("mimeType", "")
+                container, codec = _mime_parts(mime)
+                info = {
+                    "url": entry["url"],
+                    "container": container,
+                    "quality": entry.get("quality") or "",
+                    "bitrate": int(entry.get("bitrate") or 0),
+                    "size": 0,
+                    "codec": codec,
+                    "width": entry.get("width"),
+                    "height": entry.get("height"),
+                }
+                if entry.get("videoOnly", True):
+                    video.append({**info, "isAudio": False, "isVideoOnly": True, "isMuxed": False})
+                else:
+                    muxed.append({**info, "isAudio": False, "isVideoOnly": False, "isMuxed": True})
+            for entry in data.get("audioStreams", []):
+                if not entry.get("url"):
+                    continue
+                container, codec = _mime_parts(entry.get("mimeType", ""))
+                audio.append(
+                    {
+                        "url": entry["url"],
+                        "container": container,
+                        "quality": entry.get("quality") or "",
+                        "bitrate": int(entry.get("bitrate") or 0),
+                        "size": 0,
+                        "codec": codec,
+                        "width": None,
+                        "height": None,
+                        "isAudio": True,
+                        "isVideoOnly": False,
+                        "isMuxed": False,
+                    }
+                )
+        except (KeyError, TypeError, ValueError):
+            continue
+        picked = _pick_community(muxed, video, audio)
+        if picked:
+            return picked
+    return None
+
+
+def _invidious_streams(video_id):
+    """Best-effort streams from a public Invidious instance."""
+    for base in _INVIDIOUS_INSTANCES:
+        try:
+            data = _fallback_get(f"{base}/api/v1/videos/{quote(video_id, safe='')}")
+        except (requests.RequestException, ValueError):
+            continue
+        if not data:
+            continue
+        try:
+            muxed, video, audio = [], [], []
+            for entry in data.get("formatStreams", []):
+                if entry.get("url"):
+                    container, codec = _mime_parts(entry.get("type", ""))
+                    muxed.append(
+                        {
+                            "url": entry["url"],
+                            "container": container,
+                            "quality": entry.get("quality") or "",
+                            "bitrate": 0,
+                            "size": 0,
+                            "codec": codec,
+                            "width": None,
+                            "height": entry.get("qualityLabel", "0p")[:-1] or 0,
+                            "isAudio": False,
+                            "isVideoOnly": False,
+                            "isMuxed": True,
+                        }
+                    )
+            for entry in data.get("adaptiveFormats", []):
+                if not entry.get("url"):
+                    continue
+                mime = entry.get("type", "")
+                container, codec = _mime_parts(mime)
+                info = {
+                    "url": entry["url"],
+                    "container": container,
+                    "quality": entry.get("qualityLabel") or "",
+                    "bitrate": int(entry.get("bitrate") or 0),
+                    "size": 0,
+                    "codec": codec,
+                }
+                resolution = (entry.get("resolution") or "x0").split("x")
+                if mime.startswith("audio/"):
+                    audio.append(
+                        {
+                            **info,
+                            "width": None,
+                            "height": None,
+                            "isAudio": True,
+                            "isVideoOnly": False,
+                            "isMuxed": False,
+                        }
+                    )
+                else:
+                    height = int(resolution[-1] or 0)
+                    video.append(
+                        {
+                            **info,
+                            "width": None,
+                            "height": height,
+                            "isAudio": False,
+                            "isVideoOnly": True,
+                            "isMuxed": False,
+                        }
+                    )
+        except (KeyError, TypeError, ValueError):
+            continue
+        picked = _pick_community(muxed, video, audio)
+        if picked:
+            return picked
+    return None
+
+
+def _community_streams(video_id):
+    return _piped_streams(video_id) or _invidious_streams(video_id)
+
+
+def _piped_details(video_id):
+    for base in _PIPED_INSTANCES:
+        try:
+            data = _fallback_get(f"{base}/streams/{quote(video_id, safe='')}")
+        except (requests.RequestException, ValueError):
+            continue
+        if data and data.get("title"):
+            return {
+                "videoId": data.get("id", video_id),
+                "title": data.get("title", ""),
+                "channel": data.get("uploader", ""),
+                "channelId": (data.get("uploaderUrl") or "").rsplit("/", 1)[-1],
+                "description": (data.get("description") or "")[:5000],
+                "views": str(data.get("views", "")),
+                "duration": _format_duration(data.get("duration")),
+                "isLive": bool(data.get("livestream")),
+                "thumbnail": data.get("thumbnailUrl", ""),
+                "publishDate": (data.get("uploadDate") or "")[:10],
+                "embeddable": True,
+                "status": "OK",
+            }
+    return None
+
+
+def _invidious_details(video_id):
+    for base in _INVIDIOUS_INSTANCES:
+        try:
+            data = _fallback_get(f"{base}/api/v1/videos/{quote(video_id, safe='')}")
+        except (requests.RequestException, ValueError):
+            continue
+        if data and data.get("title"):
+            published = data.get("published")
+            return {
+                "videoId": data.get("videoId", video_id),
+                "title": data.get("title", ""),
+                "channel": data.get("author", ""),
+                "channelId": data.get("authorId", ""),
+                "description": (data.get("description") or "")[:5000],
+                "views": str(data.get("viewCount", "")),
+                "duration": _format_duration(data.get("lengthSeconds")),
+                "isLive": bool(data.get("liveNow")),
+                "thumbnail": data.get("videoThumbnails", [{}])[0].get("url", ""),
+                "publishDate": datetime.fromtimestamp(published).strftime("%Y-%m-%d") if published else "",
+                "embeddable": True,
+                "status": "OK",
+            }
+    return None
+
+
+def _community_details(video_id):
+    return _piped_details(video_id) or _invidious_details(video_id)
+
+
+def _mime_parts(mime):
+    container = mime.split("/", 1)[1].split(";", 1)[0].strip() if "/" in mime else ""
+    match = re.search(r'codecs="?([^";]+)"?', mime)
+    return container, (match.group(1) if match else "")
+
+
+# --------------------------------------------------------------------------
 # Cached accessors (route layer)
 # --------------------------------------------------------------------------
 
@@ -744,11 +984,19 @@ def _home_sections(limit):
 
 def _video(video_id):
     def load():
-        _, payload = _innertube_player(video_id)
-        details = _parse_video_details(payload)
-        if not details["publishDate"]:
-            details["publishDate"] = _publish_date_fallback(video_id)
-        return details
+        try:
+            _, payload = _innertube_player(video_id)
+            details = _parse_video_details(payload)
+            if not details["publishDate"]:
+                details["publishDate"] = _publish_date_fallback(video_id)
+            return details
+        except HTTPException:
+            # Direct resolution failed; the anonymous community instances
+            # serve watch-page details too.
+            fallback = _community_details(video_id)
+            if fallback:
+                return fallback
+            raise
 
     return _cached(("video", video_id), load, ttl=900)
 
@@ -787,10 +1035,17 @@ def _streams(video_id, refresh=False):
             streams = _pick_streams(payload, player_js)
             if not (streams["muxed"] or (streams["video"] and streams["audio"])):
                 raise HTTPException(status_code=404, detail="No playable streams found for this video")
+            _remember_warm(video_id)
             return streams
         except HTTPException:
-            # A failed refresh (e.g. transient bot check) must not discard the
-            # last known-good URLs still needed by the other stream kinds.
+            # Direct resolution failed (e.g. datacenter bot check); try the
+            # anonymous community instances before giving up.
+            fallback = _community_streams(video_id)
+            if fallback:
+                _remember_warm(video_id)
+                return fallback
+            # A failed refresh must not discard the last known-good URLs
+            # still needed by the other stream kinds.
             if refresh and previous is not None:
                 _CACHE[key] = previous
             raise
@@ -798,12 +1053,45 @@ def _streams(video_id, refresh=False):
     return _cached(key, load, ttl=600)
 
 
+_KEEP_WARM = {}
+
+
+def _remember_warm(video_id):
+    _KEEP_WARM[video_id] = time.monotonic()
+    if len(_KEEP_WARM) > 16:
+        for stale_id, _ in sorted(_KEEP_WARM.items(), key=lambda kv: kv[1])[:-16]:
+            _KEEP_WARM.pop(stale_id, None)
+
+
+def _warm_loop():
+    """Re-resolve recently watched streams before their cache expires.
+
+    On hosts whose IP YouTube bot-checks intermittently, this turns one
+    lucky resolution into continuous playback.
+    """
+    while True:
+        time.sleep(240)
+        now = time.monotonic()
+        for video_id, last_seen in list(_KEEP_WARM.items()):
+            if now - last_seen > 1800:  # untouched for 30 minutes: let it cool
+                _KEEP_WARM.pop(video_id, None)
+                continue
+            entry = _CACHE.get(("streams", video_id))
+            if not entry or now - entry[0] < 480:  # still fresh enough
+                continue
+            try:
+                _streams(video_id, refresh=True)
+            except HTTPException:
+                pass  # keep the stale entry; next cycle retries
+
+
+threading.Thread(target=_warm_loop, name="webtube-keep-warm", daemon=True).start()
+
+
 def _open_stream(url, range_header, method):
     headers = dict(_STREAM_HEADERS)
     if range_header:
         headers["Range"] = range_header
-    if _COOKIE:
-        headers["Cookie"] = _COOKIE
     return requests.request(
         method,
         url,
