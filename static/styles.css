@@ -395,3 +395,25 @@ body.yt-mode { padding-bottom: 40px; }
   .yt-actions { gap: 6px; }
   .yt-action { padding: 8px 12px; }
 }
+
+/* ================= mouse-lock remote ================= */
+.mouse-lock-card {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  padding: 14px 16px; border: 1px dashed #ff2d55; border-radius: 12px;
+  background: rgba(255, 45, 85, 0.07); color: inherit; font: inherit; cursor: pointer;
+}
+#home .mouse-lock-card { width: 100%; margin: 2px 0 20px; }
+.yt-row .mouse-lock-card { flex: 0 0 340px; scroll-snap-align: start; }
+.mouse-lock-card .mlc-icon { font-size: 24px; line-height: 1; }
+.mouse-lock-card .mlc-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mouse-lock-card .mlc-text span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.mouse-lock-card .mlc-state { margin-left: auto; font-weight: 700; letter-spacing: 0.08em; font-size: 12px; color: var(--muted); }
+.mouse-lock-card .mlc-state::after { content: ""; }
+.remote-focus { outline: 3px solid #ff2d55; outline-offset: 2px; }
+.remote-hud {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90;
+  padding: 10px 16px; border-radius: 999px; background: rgba(22, 22, 22, 0.94); color: #fff;
+  font-size: 13px; border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45); pointer-events: none; white-space: nowrap;
+}
+.remote-hud.hidden { display: none; }

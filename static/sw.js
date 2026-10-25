@@ -1,9 +1,9 @@
 /* WebTube service worker — app-shell caching only. API calls pass through. */
-const CACHE = "webtube-shell-v5";
+const CACHE = "webtube-shell-v7";
 const SHELL = [
   "/",
-  "/static/styles.css?v=9",
-  "/static/app.js?v=9",
+  "/static/styles.css?v=11",
+  "/static/app.js?v=11",
   "/manifest.webmanifest",
   "/static/icons/icon-192.png",
   "/static/icons/icon-512.png",

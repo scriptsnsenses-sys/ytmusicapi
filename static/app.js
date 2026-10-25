@@ -504,7 +504,8 @@ async function doSearch() {
 $("searchBtn").onclick = doSearch;
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 function musicHome() {
-  resultsEl.innerHTML = ""; detailEl.innerHTML = ""; homeEl.innerHTML = "";
+  resultsEl.innerHTML = ""; detailEl.innerHTML = "";
+  renderMouseLockCard();
   renderContinue();
 }
 const goHome = (e) => {
@@ -662,6 +663,154 @@ async function showPlaylist(playlistId) {
   } catch (e) { setStatus("Playlist failed: " + e.message); }
 }
 
+/* ================= mouse-lock remote ================= */
+const REMOTE_KEY = "ytm_mouse_lock";
+let remoteArmed = false;
+let remoteLocked = false;
+let remoteClicks = [];
+let remoteFocusEl = null;
+try { remoteArmed = localStorage.getItem(REMOTE_KEY) === "1"; } catch { /* ignore */ }
+
+function mouseLockCardHtml() {
+  return `<button class="mouse-lock-card" type="button">
+    <span class="mlc-icon">🖱️</span>
+    <span class="mlc-text"><b>Mouse lock remote</b>
+      <span>${remoteArmed
+        ? "Armed — triple-click anywhere to lock the mouse, then steer with the arrow keys"
+        : "Click to arm, then triple-click anywhere to lock your mouse and control WebTube with arrows"}</span>
+    </span>
+    <span class="mlc-state">${remoteArmed ? "ON" : "OFF"}</span>
+  </button>`;
+}
+function renderMouseLockCard() {
+  homeEl.innerHTML = mouseLockCardHtml();
+  bindMouseLockCards();
+}
+function bindMouseLockCards() {
+  document.querySelectorAll(".mouse-lock-card").forEach((card) => {
+    card.onclick = (e) => { e.stopPropagation(); toggleRemoteArmed(); };
+  });
+}
+function toggleRemoteArmed() {
+  remoteArmed = !remoteArmed;
+  try { localStorage.setItem(REMOTE_KEY, remoteArmed ? "1" : "0"); } catch { /* ignore */ }
+  renderMouseLockCard();
+  document.querySelectorAll(".mouse-lock-card").forEach((card) => {
+    const text = card.querySelector(".mlc-text span");
+    const state = card.querySelector(".mlc-state");
+    if (text) text.textContent = remoteArmed
+      ? "Armed — triple-click anywhere to lock the mouse, then steer with the arrow keys"
+      : "Click to arm, then triple-click anywhere to lock your mouse and control WebTube with arrows";
+    if (state) state.textContent = remoteArmed ? "ON" : "OFF";
+  });
+  toast(remoteArmed
+    ? "Mouse lock armed: triple-click anywhere to lock the mouse"
+    : "Mouse lock disabled");
+}
+/* triple-click anywhere (each click within 1.5s) locks the pointer */
+document.addEventListener("click", () => {
+  // The host can terminate a pointer lock without firing pointerlockchange;
+  // reconcile against the authoritative state so a stale flag cannot block
+  // re-locking forever.
+  if (remoteLocked && document.pointerLockElement !== document.body) {
+    remoteLocked = false;
+    updateRemoteHud();
+    clearRemoteFocus();
+  }
+  if (!remoteArmed || remoteLocked) return;
+  const now = performance.now();
+  remoteClicks = remoteClicks.filter((t) => now - t < 1500);
+  remoteClicks.push(now);
+  if (remoteClicks.length >= 3) {
+    remoteClicks = [];
+    lockMouse();
+  }
+}, true);
+function lockMouse() {
+  if (!document.body.requestPointerLock) { toast("Pointer lock is not supported here"); return; }
+  const request = document.body.requestPointerLock();
+  if (request && request.catch) request.catch(() => toast("Could not lock the mouse — try again"));
+}
+document.addEventListener("pointerlockchange", () => {
+  remoteLocked = document.pointerLockElement === document.body;
+  updateRemoteHud();
+  if (remoteLocked) {
+    const first = remoteCandidates()[0];
+    setRemoteFocus(first);
+    toast("Mouse locked — arrows navigate, Enter selects, Esc releases");
+  } else {
+    clearRemoteFocus();
+  }
+});
+document.addEventListener("pointerlockerror", () => toast("Could not lock the mouse — try again"));
+function updateRemoteHud() {
+  let hud = $("remoteHud");
+  if (!hud) {
+    hud = document.createElement("div");
+    hud.id = "remoteHud";
+    hud.className = "remote-hud hidden";
+    document.body.appendChild(hud);
+  }
+  hud.textContent = "🖱️ Mouse locked — ↑ ↓ ← → navigate · Enter select · Esc release";
+  hud.classList.toggle("hidden", !remoteLocked);
+}
+function remoteCandidates() {
+  return [...document.querySelectorAll("button, a[href], input")].filter((el) => {
+    if (el.disabled || el.closest(".hidden")) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+}
+function setRemoteFocus(el) {
+  clearRemoteFocus();
+  remoteFocusEl = el;
+  if (el) {
+    el.classList.add("remote-focus");
+    el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  }
+}
+function clearRemoteFocus() {
+  if (remoteFocusEl) remoteFocusEl.classList.remove("remote-focus");
+  remoteFocusEl = null;
+}
+function remoteMove(dir) {
+  const candidates = remoteCandidates();
+  if (!candidates.length) return;
+  if (!remoteFocusEl || !candidates.includes(remoteFocusEl)) { setRemoteFocus(candidates[0]); return; }
+  const cur = remoteFocusEl.getBoundingClientRect();
+  const ccx = cur.left + cur.width / 2, ccy = cur.top + cur.height / 2;
+  let best = null, bestScore = Infinity;
+  for (const el of candidates) {
+    if (el === remoteFocusEl) continue;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    const dx = cx - ccx, dy = cy - ccy;
+    let along = -1, perp = 0;
+    if (dir === "left")  { if (dx >= -8) continue; along = -dx; perp = Math.abs(dy); }
+    if (dir === "right") { if (dx <= 8) continue; along = dx; perp = Math.abs(dy); }
+    if (dir === "up")    { if (dy >= -8) continue; along = -dy; perp = Math.abs(dx); }
+    if (dir === "down")  { if (dy <= 8) continue; along = dy; perp = Math.abs(dx); }
+    if (along < 0) continue;
+    const score = along + perp * 2.5;
+    if (score < bestScore) { bestScore = score; best = el; }
+  }
+  if (best) setRemoteFocus(best);
+}
+document.addEventListener("keydown", (e) => {
+  if (!remoteLocked) return;
+  const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+  if (map[e.key]) { e.preventDefault(); remoteMove(map[e.key]); return; }
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (remoteFocusEl) remoteFocusEl.click();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (document.exitPointerLock) document.exitPointerLock();
+  }
+});
+
 /* ================= YouTube mode ================= */
 const MODE_KEY = "ytm_mode";
 let mode = "music";
@@ -754,11 +903,16 @@ async function loadYtHome() {
   try {
     const data = await api("/yt/home");
     const sections = data.sections || [];
-    ytHomeEl.innerHTML = sections.length ? sections.map((section) => `
+    const remoteSection = `
+      <section class="yt-section yt-remote-section">
+        <div class="yt-row">${mouseLockCardHtml()}</div>
+      </section>`;
+    ytHomeEl.innerHTML = remoteSection + (sections.length ? sections.map((section) => `
       <section class="yt-section">
         <h2 class="yt-section-title">${esc(section.title)}</h2>
         <div class="yt-row">${(section.videos || []).map(ytCard).join("")}</div>
-      </section>`).join("") : `<div class="yt-empty">No videos returned. Try searching above.</div>`;
+      </section>`).join("") : `<div class="yt-empty">No videos returned. Try searching above.</div>`);
+    bindMouseLockCards();
     bindYtCards(ytHomeEl);
     ytHomeLoaded = true;
     setStatus("");
@@ -1047,6 +1201,7 @@ function applyRoute() {
   try { localStorage.setItem(MODE_KEY, "music"); } catch { /* ignore */ }
   if (!musicViewReady) {
     musicViewReady = true;
+    renderMouseLockCard();
     renderContinue();
   }
 }
